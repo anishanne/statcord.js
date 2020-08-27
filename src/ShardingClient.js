@@ -2,8 +2,9 @@
 const fetch = require("node-fetch");
 const si = require("systeminformation");
 const ShardingUtil = require("./util/shardUtil");
+const { EventEmitter } = require("events");
 
-class ShardingClient {
+class ShardingClient extends EventEmitter {
     static post = ShardingUtil.post;
     static postCommand = ShardingUtil.postCommand;
 
@@ -40,7 +41,7 @@ class ShardingClient {
         this.autoposting = autopost;
 
         // API config
-        this.baseApiUrl = "https://beta.statcord.com/logan/stats"; //TODO update before full release
+        this.baseApiUrl = "https://statcord.com/logan/stats";
         this.key = key;
         this.manager = manager;
 
@@ -71,12 +72,13 @@ class ShardingClient {
                 currShard.once("ready", () => {
                     setTimeout(async () => {
                         console.log("Starting autopost");
-
+    
                         let initialPostError = await this.post();
-
+                        console.log("Initial Post Done")
                         if (initialPostError) console.error(initialPostError);
 
                         setInterval(async () => {
+                            console.log("Attempting Posting")
                             await this.post();
                         }, 60000);
                     }, 200);
@@ -96,7 +98,7 @@ class ShardingClient {
                     await this.postCommand(args[1], args[2]);
                 } else if (args[0] == "sscp") { // Post message
                         let post = await this.post();
-                        if (post) console.error(new Error(post));
+                        if (post) this.emit("error", post);
                     }
             });
         });
@@ -104,8 +106,9 @@ class ShardingClient {
 
     // Post stats to API
     async post() {
+        console.log("Starting The Post Sequence")
         let bandwidth = 0;
-
+        console.log(this.postNetworkStatistics)
         if (this.postNetworkStatistics) {
             // Set initial used network bytes count
             if (this.used_bytes <= 0) this.used_bytes = (await si.networkStats()).reduce((prev, current) => prev + current.rx_bytes, 0);
@@ -122,13 +125,15 @@ class ShardingClient {
 
         // V12 code
         if (this.v12) {
+            console.log("V12")
             guild_count = await getGuildCountV12(this.manager);
             user_count = await getUserCountV12(this.manager);
         } else if (this.v11) { // V11 code
+            console.log("V11")
             guild_count = await getGuildCountV11(this.manager);
             user_count = await getUserCountV11(this.manager);
         }
-
+        console.log("Popular Sorting")
         // Get and sort popular commands
         let popular = [];
 
@@ -143,7 +148,7 @@ class ShardingClient {
 
         // Limit popular to the 5 most popular
         if (popular.length > 5) popular.length = 5;
-
+        print("System Information")
         // Get system information
         let memactive = 0;
         let memload = 0;
@@ -171,10 +176,10 @@ class ShardingClient {
                 cpuload = Math.round(load.currentload);
             }
         }
-
+        print("ok lets try this")
         // Get client id
         let id = (await this.manager.broadcastEval("this.user.id"))[0];
-
+        print("Gen Data")
         // Post data
         let requestBody = {
             id, // Client id
@@ -206,7 +211,7 @@ class ShardingClient {
         this.activeUsers = [];
         this.commandsRun = 0;
         this.popularCommands = [];
-
+        print("Sending Request")
         // Create post request
         let response;
         try {
@@ -218,7 +223,7 @@ class ShardingClient {
                 }
             });
         } catch (e) {
-            console.log("Unable to connect to the Statcord server. Going to automatically try again in 60 seconds, if this problem persists, please visit status.statcord.com");
+            this.emit("post", "Unable to connect to the Statcord server. Going to automatically try again in 60 seconds, if this problem persists, please visit status.statcord.com");
 
             if (!this.autoposting) {
                 setTimeout(() => {
@@ -228,31 +233,33 @@ class ShardingClient {
 
             return;
         }
-
+        print("ya its done boys")
+        print(response.status)
         // Statcord server side errors
-        if (response.status >= 500) return new Error(`Statcord server error, statuscode: ${response.status}`);
+        if (response.status >= 500) {
+            this.emit("post", new Error(`Statcord server error, statuscode: ${response.status}`));
+            return;
+        }
 
         // Get body as JSON
         let responseData;
         try {
             responseData = await response.json();
         } catch {
-            return new Error(`Statcord server error, invalid json response`);
+            this.emit("post", new Error(`Statcord server error, invalid json response`));
+            return;
         }
 
         // Check response for errors
         if (response.status == 200) {
             // Success
-            if (!responseData.error) return Promise.resolve(false);
-        } else if (response.status == 400) {
-            // Bad request
-            if (responseData.error) return Promise.resolve(new Error(responseData.message));
-        } else if (response.status == 429) {
-            // Rate limit hit
-            if (responseData.error) return Promise.resolve(new Error(responseData.message));
+            if (!responseData.error) this.emit("post", false);
+        } else if (response.status == 400 || response.status == 429) {
+            // Bad request or rate limit hit
+            if (responseData.error) this.emit("post", new Error(responseData.message));
         } else {
             // Other
-            return Promise.resolve(new Error("An unknown error has occurred"));
+            this.emit("post", new Error("An unknown error has occurred"));
         }
     }
 
